@@ -1,10 +1,10 @@
-from flask import Flask, render_template, redirect, url_for, flash, request, jsonify, make_response, abort
+from flask import Flask, render_template, redirect, url_for, flash, request
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_wtf import FlaskForm
 from wtforms import StringField, PasswordField, SubmitField, BooleanField, TextAreaField, SelectField
-from wtforms.validators import DataRequired, Email, EqualTo, Length, ValidationError
+from wtforms.validators import DataRequired, Email, EqualTo, Length
 from datetime import datetime
 
 app = Flask(__name__)
@@ -16,7 +16,7 @@ db = SQLAlchemy(app)
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 
-
+# Models
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(150), unique=True, nullable=False)
@@ -43,18 +43,7 @@ class Task(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
 
-    def mark_as_completed(self):
-        self.completed = True
-        db.session.commit()
-
-    def mark_as_incomplete(self):
-        self.completed = False
-        db.session.commit()
-
-    def log_action(self, action):
-        print(f"[{datetime.utcnow()}] Task '{self.title}' - {action}")
-
-
+# Forms
 class RegistrationForm(FlaskForm):
     username = StringField('Username', validators=[DataRequired(), Length(min=4, max=150)])
     email = StringField('Email', validators=[DataRequired(), Email()])
@@ -65,12 +54,12 @@ class RegistrationForm(FlaskForm):
     def validate_username(self, username):
         user = User.query.filter_by(username=username.data).first()
         if user:
-            raise ValidationError('That username is already taken. Please choose a different one.')
+            raise ValidationError('That username is already taken.')
 
     def validate_email(self, email):
         user = User.query.filter_by(email=email.data).first()
         if user:
-            raise ValidationError('That email is already registered. Please use a different one.')
+            raise ValidationError('That email is already registered.')
 
 class LoginForm(FlaskForm):
     email = StringField('Email', validators=[DataRequired(), Email()])
@@ -107,6 +96,22 @@ class ProfileForm(FlaskForm):
     confirm_new_password = PasswordField('Confirm New Password', validators=[EqualTo('new_password')])
     submit = SubmitField('Update Profile')
 
+# Routes
+@app.route('/')
+@login_required
+def home():
+    page = request.args.get('page', 1, type=int)
+    search_query = request.args.get('search', '')
+    tasks = Task.query.filter_by(user_id=current_user.id)
+
+    if search_query:
+        tasks = tasks.filter(Task.title.contains(search_query))
+
+    tasks = tasks.order_by(Task.created_at.desc()).paginate(page=page, per_page=5, error_out=False)
+    form = TaskForm()
+
+    return render_template('home.html', tasks=tasks, form=form, search_query=search_query)
+
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     form = RegistrationForm()
@@ -138,19 +143,10 @@ def logout():
     logout_user()
     return redirect(url_for('login'))
 
-@app.route('/', methods=['GET', 'POST'])
+@app.route('/add_task', methods=['POST'])
 @login_required
-def home():
+def add_task():
     form = TaskForm()
-    page = request.args.get('page', 1, type=int)
-    search_query = request.args.get('search', '')
-    tasks = Task.query.filter_by(user_id=current_user.id)
-
-    if search_query:
-        tasks = tasks.filter(Task.title.contains(search_query))
-
-    tasks = tasks.order_by(Task.created_at.desc()).paginate(page=page, per_page=5)
-
     if form.validate_on_submit():
         new_task = Task(
             title=form.title.data,
@@ -160,11 +156,8 @@ def home():
         )
         db.session.add(new_task)
         db.session.commit()
-        new_task.log_action("created")
         flash('Task added successfully!', 'success')
-        return redirect(url_for('home'))
-
-    return render_template('home.html', tasks=tasks, form=form, search_query=search_query)
+    return redirect(url_for('home'))
 
 @app.route('/delete/<int:task_id>')
 @login_required
@@ -172,7 +165,6 @@ def delete_task(task_id):
     task = Task.query.get_or_404(task_id)
     if task.user_id != current_user.id:
         abort(403)
-    task.log_action("deleted")
     db.session.delete(task)
     db.session.commit()
     flash('Task deleted successfully!', 'success')
@@ -184,8 +176,8 @@ def complete_task(task_id):
     task = Task.query.get_or_404(task_id)
     if task.user_id != current_user.id:
         abort(403)
-    task.mark_as_completed()
-    task.log_action("marked as completed")
+    task.completed = True
+    db.session.commit()
     flash('Task marked as completed!', 'success')
     return redirect(url_for('home'))
 
@@ -195,8 +187,8 @@ def incomplete_task(task_id):
     task = Task.query.get_or_404(task_id)
     if task.user_id != current_user.id:
         abort(403)
-    task.mark_as_incomplete()
-    task.log_action("marked as incomplete")
+    task.completed = False
+    db.session.commit()
     flash('Task marked as incomplete!', 'warning')
     return redirect(url_for('home'))
 
@@ -212,7 +204,6 @@ def edit_task(task_id):
         task.description = form.description.data
         task.category = form.category.data
         db.session.commit()
-        task.log_action("updated")
         flash('Task updated successfully!', 'success')
         return redirect(url_for('home'))
     return render_template('edit_task.html', form=form, task=task)
