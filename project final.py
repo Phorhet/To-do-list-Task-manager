@@ -4,19 +4,20 @@ from flask_login import LoginManager, UserMixin, login_user, logout_user, login_
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_wtf import FlaskForm
 from wtforms import StringField, PasswordField, SubmitField, BooleanField, TextAreaField, SelectField
-from wtforms.validators import DataRequired, Email, EqualTo, Length
+from wtforms.validators import DataRequired, Email, EqualTo, Length, ValidationError
 from datetime import datetime
+import os
+
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your_secret_key'
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///todo.db'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///todo.db'  # Используем SQLite
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 
-# Models
+
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(150), unique=True, nullable=False)
@@ -31,7 +32,7 @@ class User(UserMixin, db.Model):
         if username:
             self.username = username
         if password:
-            self.password = generate_password_hash(password, method='sha256')
+            self.password = generate_password_hash(password, method='pbkdf2:sha256')
         db.session.commit()
 
 class Task(db.Model):
@@ -43,7 +44,7 @@ class Task(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
 
-# Forms
+
 class RegistrationForm(FlaskForm):
     username = StringField('Username', validators=[DataRequired(), Length(min=4, max=150)])
     email = StringField('Email', validators=[DataRequired(), Email()])
@@ -96,8 +97,7 @@ class ProfileForm(FlaskForm):
     confirm_new_password = PasswordField('Confirm New Password', validators=[EqualTo('new_password')])
     submit = SubmitField('Update Profile')
 
-# Routes
-@app.route('/')
+@app.route('/', methods=['GET'])
 @login_required
 def home():
     page = request.args.get('page', 1, type=int)
@@ -112,11 +112,27 @@ def home():
 
     return render_template('home.html', tasks=tasks, form=form, search_query=search_query)
 
+@app.route('/add_task', methods=['POST'])
+@login_required
+def add_task():
+    form = TaskForm()
+    if form.validate_on_submit():
+        new_task = Task(
+            title=form.title.data,
+            description=form.description.data,
+            category=form.category.data,
+            user_id=current_user.id
+        )
+        db.session.add(new_task)
+        db.session.commit()
+        flash('Task added successfully!', 'success')
+    return redirect(url_for('home'))
+
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     form = RegistrationForm()
     if form.validate_on_submit():
-        hashed_password = generate_password_hash(form.password.data, method='sha256')
+        hashed_password = generate_password_hash(form.password.data, method='pbkdf2:sha256')
         new_user = User(username=form.username.data, email=form.email.data, password=hashed_password)
         db.session.add(new_user)
         db.session.commit()
@@ -142,22 +158,6 @@ def login():
 def logout():
     logout_user()
     return redirect(url_for('login'))
-
-@app.route('/add_task', methods=['POST'])
-@login_required
-def add_task():
-    form = TaskForm()
-    if form.validate_on_submit():
-        new_task = Task(
-            title=form.title.data,
-            description=form.description.data,
-            category=form.category.data,
-            user_id=current_user.id
-        )
-        db.session.add(new_task)
-        db.session.commit()
-        flash('Task added successfully!', 'success')
-    return redirect(url_for('home'))
 
 @app.route('/delete/<int:task_id>')
 @login_required
@@ -226,7 +226,13 @@ def profile():
 
 @login_manager.user_loader
 def load_user(user_id):
-    return User.query.get(int(user_id))
+    return db.session.get(User, int(user_id))  # Исправлено
+
+
+with app.app_context():
+    if not os.path.exists('todo.db'):
+        print("Creating database file...")
+    db.create_all()
 
 if __name__ == '__main__':
     app.run(debug=True)
